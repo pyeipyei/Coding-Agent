@@ -31,6 +31,9 @@ Carefully analyze the feedback to repair and improve the code structure.
 ## OUTPUT INSTRUCTIONS
 - Output ONLY the valid, updated source code inside Markdown blocks (e.g., ```python ... ```).
 - Absolute zero conversational text or explanations before or after the code block.
+
+## CONVERSATIONAL FALLBACK
+    If the user's latest message is a casual greeting, question, or comment unrelated to testing a new code snippet, do NOT execute any tools. Respond politely as the Code Tester and await further instructions.
 """,
     description="Refines and fixes generated code based on compiler/runtime error feedback",
     output_key="generated_code",

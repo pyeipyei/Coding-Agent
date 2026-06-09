@@ -4,74 +4,103 @@ Tools for Code Tester Agent
 This module provides tools for executing and validating generated source code.
 """
 
-import sys
-import traceback
-from io import StringIO
+import docker
+from docker.errors import ContainerError, APIError
 from typing import Any, Dict
-
 from google.adk.tools.tool_context import ToolContext
-
 
 def execute_code(code: str, tool_context: ToolContext) -> Dict[str, Any]:
     """
-    Tool to execute Python code in an isolated environment and capture runtime feedback.
-    Updates test_status in the state based on execution success.
+    Executes Python code safely inside an isolated local Docker container.
+    Prevents host file damage, infinite loops, and unauthorized network calls.
 
     Args:
-        code: The Python source code string to execute
-        tool_context: Context for accessing and updating session state
-
-    Returns:
-        Dict[str, Any]: Dictionary containing:
-            - result: 'fail' or 'pass'
-            - output: Standard output captured during execution
-            - error: Full traceback string if an exception occurred
-            - message: Summary feedback message
+        code: The Python source code string to execute.
+        tool_context: Context for accessing and updating session state.
     """
-    # Defensive parsing: strip markdown code blocks if present
+    # Clean up markdown block wrapping if present
     if "```python" in code:
         code = code.split("```python")[1].split("```")[0].strip()
     elif "```" in code:
         code = code.split("```")[1].split("```")[0].strip()
 
-    print("\n----------- TOOL DEBUG -----------")
-    print("Executing generated code workspace...")
-    print("----------------------------------\n")
+    print("\n----------- DOCKER SANDBOX EXECUTION -----------")
+    print("Provisioning ephemeral container workspace...")
+    print("------------------------------------------------\n")
 
-    # Capture standard output
-    old_stdout = sys.stdout
-    redirected_output = sys.stdout = StringIO()
-
+    # Connect to the local Docker Desktop daemon
     try:
-        # Execute code in a clean global context
-        execution_globals = {"__builtins__": __builtins__}
-        exec(code, execution_globals)
-        
-        # Restore stdout and fetch logs
-        sys.stdout = old_stdout
-        captured_output = redirected_output.getvalue()
-
-        tool_context.state["test_status"] = "pass"
+        client = docker.from_env()
+    except Exception as e:
         return {
-            "result": "pass",
-            "output": captured_output,
-            "message": "Code executed successfully with zero runtime errors.",
+            "result": "fail",
+            "output": "",
+            "error": f"Failed to connect to Docker Desktop. Ensure it is running. Error: {str(e)}",
+            "message": "Docker infrastructure failure."
         }
 
-    except Exception as e:
-        # Restore stdout and capture traceback details
-        sys.stdout = old_stdout
-        captured_output = redirected_output.getvalue()
-        error_traceback = traceback.format_exc()
+    container = None
+    TIMEOUT_SECONDS = 10  # Hard stop for malicious or broken infinite loops
 
+    try:
+        # Create the container configuration
+        container = client.containers.create(
+            image="python:3.11-slim",
+            command=["python", "-c", code],
+            network_disabled=True,        # CRITICAL: Disables outbound/inbound internet access
+            mem_limit="256m",             # CRITICAL: Restricts memory to prevent RAM exhaustion
+            nano_cpus=1000000000,         # CRITICAL: Restricts execution to 1 CPU core max
+        )
+
+        # Fire up the container
+        container.start()
+
+        # Monitor container execution status with a strict timeout constraint
+        result = container.wait(timeout=TIMEOUT_SECONDS)
+        exit_code = result.get("StatusCode", -1)
+        
+        # Grab the container console output logs
+        captured_logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+
+        if exit_code == 0:
+            tool_context.state["test_status"] = "pass"
+            return {
+                "result": "pass",
+                "output": captured_logs,
+                "message": "Code executed successfully inside Docker sandbox with zero errors.",
+            }
+        else:
+            tool_context.state["test_status"] = "fail"
+            return {
+                "result": "fail",
+                "output": captured_logs,
+                "error": f"Runtime exit code {exit_code}",
+                "message": "The script compiled but threw an execution runtime error.",
+            }
+
+    except ConnectionError:
         tool_context.state["test_status"] = "fail"
         return {
             "result": "fail",
-            "output": captured_output,
-            "error": error_traceback,
-            "message": f"Runtime Error encountered: {str(e)}",
+            "output": "",
+            "error": f"Execution timed out! The script took longer than {TIMEOUT_SECONDS}s to finish.",
+            "message": "Potential infinite loop detected and terminated.",
         }
-
+    except APIError as e:
+        tool_context.state["test_status"] = "fail"
+        return {
+            "result": "fail",
+            "output": "",
+            "error": str(e),
+            "message": "Docker Engine API failure encountered.",
+        }
+    finally:
+        # Defensive cleanup: Always wipe the container instance completely off the host machine
+        if container:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
 
 def exit_loop(tool_context: ToolContext) -> Dict[str, Any]:
     """
