@@ -52,10 +52,8 @@ def execute_code(code: str, tool_context: ToolContext) -> Dict[str, Any]:
             nano_cpus=1000000000,         # CRITICAL: Restricts execution to 1 CPU core max
         )
 
-        # Fire up the container
         container.start()
 
-        # Monitor container execution status with a strict timeout constraint
         result = container.wait(timeout=TIMEOUT_SECONDS)
         exit_code = result.get("StatusCode", -1)
         

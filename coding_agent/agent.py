@@ -1,5 +1,8 @@
-from google.adk.agents import LoopAgent, SequentialAgent
+from google.adk.agents import LoopAgent, SequentialAgent, Agent
 from dotenv import load_dotenv
+from google.adk.models.lite_llm import LiteLlm
+
+MODEL = LiteLlm("openai/gpt-4o-mini")
 
 load_dotenv()
 
@@ -32,8 +35,21 @@ improvement_loop = LoopAgent(
 )
 
 
-root_agent = SequentialAgent(
+coding_agent = SequentialAgent(
     name="coding_agent",
     description="Generates and refines the code through an iterative review process",
     sub_agents=[initial_code_generator, improvement_loop],
 )
+
+root_agent = Agent(
+    name="delegator_agent",
+    model=MODEL,
+    instruction="""
+    You are a Delegator Agent responsible for orchestrating the code generation and refinement process.
+    When the user provides a coding task, delegate the task to the coding agent.
+    When the user provides other types of input, respond politely and await further instructions without executing any tools.
+    """,
+    description="Orchestrates the code generation and refinement process",
+    sub_agents=[coding_agent],
+    )
+    
